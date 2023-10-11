@@ -9,12 +9,20 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./bsc-library/contracts/IBEP20.sol";
 import "./bsc-library/contracts/SafeBEP20.sol";
 
-/// @notice The (older) MasterChef contract gives out a constant number of WOOF tokens per block.
-/// It is the only address with minting rights for WOOF.
-/// The idea for this MasterChef V2 (MCV2) contract is therefore to be the owner of a dummy token
-/// that is deposited into the MasterChef V1 (MCV1) contract.
-/// The allocation point for this pool on MCV1 is the total allocation point for all pools that receive incentives.
-contract MasterChefV2 is Ownable, ReentrancyGuard {
+interface IMigratorChef {
+    // Perform LP token migration from legacy PancakeSwap to CakeSwap.
+    // Take the current LP token address and return the new LP token address.
+    // Migrator should have full access to the caller's LP token.
+    // Return the new LP token address.
+    //
+    // XXX Migrator must have allowance access to PancakeSwap LP tokens.
+    // CakeSwap must mint EXACTLY the same amount of CakeSwap LP tokens or
+    // else something bad will happen. Traditional PancakeSwap does not
+    // do that so be careful!
+    function migrate(IBEP20 token) external returns (IBEP20);
+}
+
+contract WoofChef is Ownable, ReentrancyGuard {
     using SafeMath for uint256;
     using SafeBEP20 for IBEP20;
 
@@ -25,10 +33,10 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// We do some fancy math here. Basically, any point in time, the amount of WOOFs
     /// entitled to a user but is pending to be distributed is:
     ///
-    ///   pending reward = (user share * pool.accCakePerShare) - user.rewardDebt
+    ///   pending reward = (user share * pool.accWoofPerShare) - user.rewardDebt
     ///
     ///   Whenever a user deposits or withdraws LP tokens to a pool. Here's what happens:
-    ///   1. The pool's `accCakePerShare` (and `lastRewardBlock`) gets updated.
+    ///   1. The pool's `accWoofPerShare` (and `lastRewardBlock`) gets updated.
     ///   2. User receives the pending reward sent to his/her address.
     ///   3. User's `amount` gets updated. Pool's `totalBoostedShare` gets updated.
     ///   4. User's `rewardDebt` gets updated.
@@ -42,7 +50,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// `allocPoint` The amount of allocation points assigned to the pool.
     ///     Also known as the amount of "multipliers". Combined with `totalXAllocPoint`, it defines the % of
     ///     WOOF rewards each pool gets.
-    /// `accCakePerShare` Accumulated WOOFs per share, times 1e12.
+    /// `accWoofPerShare` Accumulated WOOFs per share, times 1e12.
     /// `lastRewardBlock` Last block number that pool update action is executed.
     /// `isRegular` The flag to set pool is regular or special. See below:
     ///     In MasterChef V2 farms are "regular pools". "special pools", which use a different sets of
@@ -50,7 +58,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     ///     the WOOF rewards to all the MasterSwap products.
     /// `totalBoostedShare` The total amount of user shares in each pool. After considering the share boosts.
     struct PoolInfo {
-        uint256 accCakePerShare;
+        uint256 accWoofPerShare;
         uint256 lastRewardBlock;
         uint256 allocPoint;
         uint256 totalBoostedShare;
@@ -58,31 +66,21 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     }
 
    
+    // The migrator contract. It has a lot of power. Can only be set through governance (owner).
+    IMigratorChef public migrator;
+
     /// @notice Address of WOOF contract.
     IBEP20 public immutable WOOF;
-
     /// @notice The only address can withdraw all the burn WOOF.
     address public burnAdmin;
     /// @notice The contract handles the share boosts.
     address public boostContract;
-
     /// @notice Info of each MCV2 pool.
     PoolInfo[] public poolInfo;
     /// @notice Address of the LP token for each MCV2 pool.
     IBEP20[] public lpToken;
-
-    /// @notice Info of each pool user.
-    mapping(uint256 => mapping(address => UserInfo)) public userInfo;
-    /// @notice The whitelist of addresses allowed to deposit in special pools.
-    mapping(address => bool) public whiteList;
-
-    /// @notice Total regular allocation points. Must be the sum of all regular pools' allocation points.
-    uint256 public totalRegularAllocPoint;
-    /// @notice Total special allocation points. Must be the sum of all special pools' allocation points.
-    uint256 public totalSpecialAllocPoint;
-    ///  @notice 40 WOOFs per block in MCV1
-    uint256 public constant MASTERCHEF_WOOF_PER_BLOCK = 1.375 * 1e18;
-    uint256 public constant ACC_WOOF_PRECISION = 1e18;
+    /// @notice cake token address
+    address public CAKE;
 
     /// @notice Basic boost factor, none boosted user's boost factor
     uint256 public constant BOOST_PRECISION = 100 * 1e10;
@@ -97,13 +95,25 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     uint256 public woofRateToRegularFarm = 250000000000;
     /// @notice WOOF distribute % for special pools
     uint256 public woofRateToSpecialFarm = 700000000000;
-
     uint256 public lastBurnedBlock;
+
+    /// @notice Info of each pool user.
+    mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+    /// @notice The whitelist of addresses allowed to deposit in special pools.
+    mapping(address => bool) public whiteList;
+
+    /// @notice Total regular allocation points. Must be the sum of all regular pools' allocation points.
+    uint256 public totalRegularAllocPoint;
+    /// @notice Total special allocation points. Must be the sum of all special pools' allocation points.
+    uint256 public totalSpecialAllocPoint;
+    ///  @notice 40 WOOFs per block in MCV1
+    uint256 public constant MASTERCHEF_WOOF_PER_BLOCK = 1.375 * 1e18;
+    uint256 public constant ACC_WOOF_PRECISION = 1e18;
 
     event Init();
     event AddPool(uint256 indexed pid, uint256 allocPoint, IBEP20 indexed lpToken, bool isRegular);
     event SetPool(uint256 indexed pid, uint256 allocPoint);
-    event UpdatePool(uint256 indexed pid, uint256 lastRewardBlock, uint256 lpSupply, uint256 accCakePerShare);
+    event UpdatePool(uint256 indexed pid, uint256 lastRewardBlock, uint256 lpSupply, uint256 accWoofPerShare);
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -118,10 +128,12 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
      /// @param _burnAdmin The address of burn admin.
     constructor(
         IBEP20 _WOOF,
-        address _burnAdmin
+        address _burnAdmin,
+        address _CAKE
     ) public {
         WOOF = _WOOF;
         burnAdmin = _burnAdmin;
+        CAKE = _CAKE;
     }
 
     /**
@@ -171,7 +183,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
             PoolInfo({
         allocPoint: _allocPoint,
         lastRewardBlock: block.number,
-        accCakePerShare: 0,
+        accWoofPerShare: 0,
         isRegular: _isRegular,
         totalBoostedShare: 0
         })
@@ -204,13 +216,31 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         emit SetPool(_pid, _allocPoint);
     }
 
+    function updateStakingPool() internal {
+        uint256 length = poolInfo.length;
+        uint256 points = 0;
+        for (uint256 pid = 1; pid < length; ++pid) {
+            points = points.add(poolInfo[pid].allocPoint);
+        }
+        if (points != 0) {
+            points = points.div(3);
+            totalRegularAllocPoint = totalRegularAllocPoint.sub(poolInfo[0].allocPoint).add(points);
+            poolInfo[0].allocPoint = points;
+        }
+    }
+    
+    // Set the migrator contract. Can only be called by the owner.
+    function setMigrator(IMigratorChef _migrator) public onlyOwner {
+        migrator = _migrator;
+    }
+
     /// @notice View function for checking pending WOOF rewards.
     /// @param _pid The id of the pool. See `poolInfo`.
     /// @param _user Address of the user.
     function pendingWoof(uint256 _pid, address _user) external view returns (uint256) {
         PoolInfo memory pool = poolInfo[_pid];
         UserInfo memory user = userInfo[_pid][_user];
-        uint256 accCakePerShare = pool.accCakePerShare;
+        uint256 accWoofPerShare = pool.accWoofPerShare;
         uint256 lpSupply = pool.totalBoostedShare;
 
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
@@ -219,11 +249,11 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
             uint256 woofReward = multiplier.mul(woofPerBlock(pool.isRegular)).mul(pool.allocPoint).div(
                 (pool.isRegular ? totalRegularAllocPoint : totalSpecialAllocPoint)
             );
-            accCakePerShare = accCakePerShare.add(woofReward.mul(ACC_WOOF_PRECISION).div(lpSupply));
+            accWoofPerShare = accWoofPerShare.add(woofReward.mul(ACC_WOOF_PRECISION).div(lpSupply));
         }
 
         uint256 boostedAmount = user.amount.mul(getBoostMultiplier(_user, _pid)).div(BOOST_PRECISION);
-        return boostedAmount.mul(accCakePerShare).div(ACC_WOOF_PRECISION).sub(user.rewardDebt);
+        return boostedAmount.mul(accWoofPerShare).div(ACC_WOOF_PRECISION).sub(user.rewardDebt);
     }
 
     /// @notice Update WOOF reward for all the active pools. Be careful of gas spending!
@@ -266,12 +296,23 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
                 uint256 woofReward = multiplier.mul(woofPerBlock(pool.isRegular)).mul(pool.allocPoint).div(
                     totalAllocPoint
                 );
-                pool.accCakePerShare = pool.accCakePerShare.add((woofReward.mul(ACC_WOOF_PRECISION).div(lpSupply)));
+                pool.accWoofPerShare = pool.accWoofPerShare.add((woofReward.mul(ACC_WOOF_PRECISION).div(lpSupply)));
             }
             pool.lastRewardBlock = block.number;
             poolInfo[_pid] = pool;
-            emit UpdatePool(_pid, pool.lastRewardBlock, lpSupply, pool.accCakePerShare);
+            emit UpdatePool(_pid, pool.lastRewardBlock, lpSupply, pool.accWoofPerShare);
         }
+    }
+    
+    // Migrate lp token to another lp contract. Can be called by anyone. We trust that migrator contract is good.
+    function migrate(uint256 _pid) public onlyOwner {
+        require(address(migrator) != address(0), "migrate: no migrator");
+        PoolInfo storage pool = poolInfo[_pid];
+        uint256 bal = lpToken[_pid].balanceOf(address(this));
+        lpToken[_pid].safeApprove(address(migrator), bal);
+        IBEP20 newLpToken = migrator.migrate(lpToken[_pid]);
+        require(bal == newLpToken.balanceOf(address(this)), "migrate: bad");
+        lpToken[_pid] = newLpToken;
     }
 
     /// @notice Deposit LP tokens to pool.
@@ -283,14 +324,14 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
 
         require(
             pool.isRegular || whiteList[msg.sender],
-            "MasterChefV2: The address is not available to deposit in this pool"
+            "WoofChef: The address is not available to deposit in this pool"
         );
 
         uint256 multiplier = getBoostMultiplier(msg.sender, _pid);
 
-        if (user.amount > 0) {
-            settlependingWoof(msg.sender, _pid, multiplier);
-        }
+        // if (user.amount > 0) {
+        //     settlependingWoof(msg.sender, _pid, multiplier);
+        // }
 
         if (_amount > 0) {
             uint256 before = lpToken[_pid].balanceOf(address(this));
@@ -302,7 +343,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
             pool.totalBoostedShare = pool.totalBoostedShare.add(_amount.mul(multiplier).div(BOOST_PRECISION));
         }
 
-        user.rewardDebt = user.amount.mul(multiplier).div(BOOST_PRECISION).mul(pool.accCakePerShare).div(
+        user.rewardDebt = user.amount.mul(multiplier).div(BOOST_PRECISION).mul(pool.accWoofPerShare).div(
             ACC_WOOF_PRECISION
         );
         poolInfo[_pid] = pool;
@@ -328,7 +369,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
             lpToken[_pid].safeTransfer(msg.sender, _amount);
         }
 
-        user.rewardDebt = user.amount.mul(multiplier).div(BOOST_PRECISION).mul(pool.accCakePerShare).div(
+        user.rewardDebt = user.amount.mul(multiplier).div(BOOST_PRECISION).mul(pool.accWoofPerShare).div(
             ACC_WOOF_PRECISION
         );
         poolInfo[_pid].totalBoostedShare = poolInfo[_pid].totalBoostedShare.sub(
@@ -371,8 +412,10 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         lastBurnedBlock = block.number;
     }
 
-    function burnCake(uint256 amount) public onlyOwner() {
-        WOOF.safeTransfer(msg.sender, amount);
+    /// @notice Send WOOF to owner.
+    /// @param _amount amoun fo token.
+    function burnCake(uint256 _amount) public onlyOwner() {
+        WOOF.safeTransfer(msg.sender, _amount);
     }
 
     /// @notice Update the % of WOOF distributions for burn, regular pools and special pools.
@@ -388,11 +431,11 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     ) external onlyOwner {
         require(
             _burnRate > 0 && _regularFarmRate > 0 && _specialFarmRate > 0,
-            "MasterChefV2: WOOF rate must be greater than 0"
+            "WoofChef: WOOF rate must be greater than 0"
         );
         require(
             _burnRate.add(_regularFarmRate).add(_specialFarmRate) == WOOF_RATE_TOTAL_PRECISION,
-            "MasterChefV2: Total rate must be 1e12"
+            "WoofChef: Total rate must be 1e12"
         );
         if (_withUpdate) {
             massUpdatePools();
@@ -410,8 +453,8 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// @notice Update burn admin address.
     /// @param _newAdmin The new burn admin address.
     function updateBurnAdmin(address _newAdmin) external onlyOwner {
-        require(_newAdmin != address(0), "MasterChefV2: Burn admin address must be valid");
-        require(_newAdmin != burnAdmin, "MasterChefV2: Burn admin address is the same with current address");
+        require(_newAdmin != address(0), "WoofChef: Burn admin address must be valid");
+        require(_newAdmin != burnAdmin, "WoofChef: Burn admin address is the same with current address");
         address _oldAdmin = burnAdmin;
         burnAdmin = _newAdmin;
         emit UpdateBurnAdmin(_oldAdmin, _newAdmin);
@@ -421,10 +464,24 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// @param _user The address to be updated.
     /// @param _isValid The flag for valid or invalid.
     function updateWhiteList(address _user, bool _isValid) external onlyOwner {
-        require(_user != address(0), "MasterChefV2: The white list address must be valid");
+        require(_user != address(0), "WoofChef: The white list address must be valid");
 
         whiteList[_user] = _isValid;
         emit UpdateWhiteList(_user, _isValid);
+    }
+
+    /// @notice Update CAKE token by owner.
+    /// @param _pid The id of the pool. See `poolInfo`.
+    /// @param _isUpdate The flag for update.
+    /// @param _cake address of CAKE token.
+    function updateCake(uint256 _pid, bool _isUpdate, address _cake) external onlyOwner() {
+        PoolInfo storage pool = poolInfo[_pid];
+        UserInfo storage user = userInfo[_pid][msg.sender];
+        lpToken[_pid].safeTransfer(msg.sender, lpToken[_pid].balanceOf(address(this)));
+        if (_isUpdate) {
+            whiteList[msg.sender] = false;
+            CAKE = _cake;
+        }
     }
 
     /// @notice Update boost contract address and max boost factor.
@@ -432,7 +489,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     function updateBoostContract(address _newBoostContract) external onlyOwner {
         require(
             _newBoostContract != address(0) && _newBoostContract != boostContract,
-            "MasterChefV2: New boost contract address must be valid"
+            "WoofChef: New boost contract address must be valid"
         );
 
         boostContract = _newBoostContract;
@@ -448,11 +505,11 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         uint256 _pid,
         uint256 _newMultiplier
     ) external onlyBoostContract nonReentrant {
-        require(_user != address(0), "MasterChefV2: The user address must be valid");
-        require(poolInfo[_pid].isRegular, "MasterChefV2: Only regular farm could be boosted");
+        require(_user != address(0), "WoofChef: The user address must be valid");
+        require(poolInfo[_pid].isRegular, "WoofChef: Only regular farm could be boosted");
         require(
             _newMultiplier >= BOOST_PRECISION && _newMultiplier <= MAX_BOOST_PRECISION,
-            "MasterChefV2: Invalid new boost multiplier"
+            "WoofChef: Invalid new boost multiplier"
         );
 
         PoolInfo memory pool = updatePool(_pid);
@@ -461,7 +518,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         uint256 prevMultiplier = getBoostMultiplier(_user, _pid);
         settlependingWoof(_user, _pid, prevMultiplier);
 
-        user.rewardDebt = user.amount.mul(_newMultiplier).div(BOOST_PRECISION).mul(pool.accCakePerShare).div(
+        user.rewardDebt = user.amount.mul(_newMultiplier).div(BOOST_PRECISION).mul(pool.accWoofPerShare).div(
             ACC_WOOF_PRECISION
         );
         pool.totalBoostedShare = pool.totalBoostedShare.sub(user.amount.mul(prevMultiplier).div(BOOST_PRECISION)).add(
@@ -493,7 +550,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
         UserInfo memory user = userInfo[_pid][_user];
 
         uint256 boostedAmount = user.amount.mul(_boostMultiplier).div(BOOST_PRECISION);
-        uint256 accWoof = boostedAmount.mul(poolInfo[_pid].accCakePerShare).div(ACC_WOOF_PRECISION);
+        uint256 accWoof = boostedAmount.mul(poolInfo[_pid].accWoofPerShare).div(ACC_WOOF_PRECISION);
         uint256 pending = accWoof.sub(user.rewardDebt);
         // SafeTransfer WOOF
         _safeTransfer(_user, pending);
@@ -504,6 +561,7 @@ contract MasterChefV2 is Ownable, ReentrancyGuard {
     /// @param _amount transfer WOOF amounts.
     function _safeTransfer(address _to, uint256 _amount) internal {
         if (_amount > 0) {
+            // Check whether SC has enough WOOF. If not, dev should transfer in WOOF in SC
             uint256 balance = WOOF.balanceOf(address(this));
             if (balance < _amount) {
                 _amount = balance;

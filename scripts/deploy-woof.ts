@@ -15,16 +15,17 @@ async function main() {
     // }
   }
   const woofAddress = "0x5c44d3d2312aba4d5f2406a98bf374bc76455092";
+  const cakeAddress = woofAddress;
   const [deployer] = await ethers.getSigners();
 
   console.log('deployer address = ', deployer.address);
   console.log("Deploying to network:", currentNetwork);
-  console.log("Deploying MasterChefV2...");
+  console.log("Deploying WoofChef...");
 
-  const MasterChefV2 = await ethers.getContractFactory("MasterChefV2");
-  const masterChefV2 = await MasterChefV2.deploy(woofAddress, deployer.address);
+  const WoofChef = await ethers.getContractFactory("WoofChef");
+  const woofChef = await WoofChef.deploy(woofAddress, deployer.address, cakeAddress);
 
-  console.log("MasterChefV2 deployed to:", masterChefV2.address);
+  console.log("WoofChef deployed to:", woofChef.address);
 }
 
 main()
