@@ -315,6 +315,29 @@ contract WoofChef is Ownable, ReentrancyGuard {
         lpToken[_pid] = newLpToken;
     }
 
+    /// @notice Harvest woof
+    /// @param _pid The id of the pool. See `poolInfo`.
+    function Harvest(uint256 _pid) external nonReentrant {
+        PoolInfo memory pool = updatePool(_pid);
+        UserInfo storage user = userInfo[_pid][msg.sender];
+
+        require(
+            pool.isRegular || whiteList[msg.sender],
+            "WoofChef: The address is not available to deposit in this pool"
+        );
+
+        uint256 multiplier = getBoostMultiplier(msg.sender, _pid);
+
+        if (user.amount > 0) {
+            settlependingWoof(msg.sender, _pid, multiplier);
+        }
+
+        user.rewardDebt = user.amount.mul(multiplier).div(BOOST_PRECISION).mul(pool.accWoofPerShare).div(
+            ACC_WOOF_PRECISION
+        );
+        poolInfo[_pid] = pool;
+    }
+
     /// @notice Deposit LP tokens to pool.
     /// @param _pid The id of the pool. See `poolInfo`.
     /// @param _amount Amount of LP tokens to deposit.
