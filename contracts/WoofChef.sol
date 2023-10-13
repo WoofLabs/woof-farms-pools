@@ -317,7 +317,7 @@ contract WoofChef is Ownable, ReentrancyGuard {
 
     /// @notice Harvest woof
     /// @param _pid The id of the pool. See `poolInfo`.
-    function Harvest(uint256 _pid) external nonReentrant {
+    function harvest(uint256 _pid) external nonReentrant {
         PoolInfo memory pool = updatePool(_pid);
         UserInfo storage user = userInfo[_pid][msg.sender];
 
